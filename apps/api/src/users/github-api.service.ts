@@ -234,7 +234,7 @@ export class GithubApiService {
       this.logger.log(`Serving offline mock repositories fallback for ${username}`);
       const mockRepos: GithubRepo[] = [
         {
-          id: String(Math.floor(Math.random() * 10000000)),
+          id: String(1000001),
           name: 'proof-of-build',
           fullName: `${username}/proof-of-build`,
           description: 'A decentralized auditing and validation platform for developers.',
@@ -247,7 +247,7 @@ export class GithubApiService {
           updatedAt: new Date().toISOString(),
         },
         {
-          id: String(Math.floor(Math.random() * 10000000)),
+          id: String(1000002),
           name: 'fastify-auth-node',
           fullName: `${username}/fastify-auth-node`,
           description: 'Fastify authentication modules supporting secure JWT sessions.',
@@ -260,7 +260,7 @@ export class GithubApiService {
           updatedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
         },
         {
-          id: String(Math.floor(Math.random() * 10000000)),
+          id: String(1000003),
           name: 'solidity-token-bridge',
           fullName: `${username}/solidity-token-bridge`,
           description: 'Smart contracts for secure cross-chain ledger validations.',
@@ -274,6 +274,167 @@ export class GithubApiService {
         }
       ];
       return mockRepos;
+    }
+  }
+  async getRepositoryLanguages(username: string, repoName: string): Promise<Record<string, number>> {
+    this.validateUsername(username);
+
+    const cacheKey = this.getCacheKey(`languages:${repoName.toLowerCase()}`, username);
+    const cached = this.getCached(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const response = await this.fetchWithRetry(`https://api.github.com/repos/${username}/${repoName}/languages`);
+      const data = await response.json();
+      this.setCache(cacheKey, data);
+      return data;
+    } catch (error) {
+      this.logger.error(`Failed to fetch languages for ${username}/${repoName}: ${error.message}`);
+      if (error instanceof NotFoundException || (error instanceof HttpException && error.getStatus() === 429) || error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // Offline Mock Fallback
+      this.logger.log(`Serving offline mock languages fallback for ${username}/${repoName}`);
+      const mockLangs: Record<string, Record<string, number>> = {
+        'proof-of-build': { 'TypeScript': 180000, 'JavaScript': 20000, 'CSS': 5000, 'HTML': 2000 },
+        'fastify-auth-node': { 'TypeScript': 45000, 'JavaScript': 5000 },
+        'solidity-token-bridge': { 'Solidity': 12000, 'TypeScript': 3000 }
+      };
+
+      return mockLangs[repoName.toLowerCase()] || { 'TypeScript': 10000 };
+    }
+  }
+
+  async getRepositoryContents(username: string, repoName: string, path: string = ''): Promise<any[]> {
+    this.validateUsername(username);
+
+    const cacheKey = this.getCacheKey(`contents:${repoName.toLowerCase()}:${path.replace(/\//g, '_')}`, username);
+    const cached = this.getCached(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const response = await this.fetchWithRetry(`https://api.github.com/repos/${username}/${repoName}/contents/${path}`);
+      const data = await response.json();
+      
+      const contents = Array.isArray(data) ? data : [data];
+      this.setCache(cacheKey, contents);
+      return contents;
+    } catch (error) {
+      this.logger.error(`Failed to fetch contents for ${username}/${repoName} at path "${path}": ${error.message}`);
+      if (error instanceof NotFoundException || (error instanceof HttpException && error.getStatus() === 429) || error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // Offline Mock Fallback
+      this.logger.log(`Serving offline mock contents fallback for ${username}/${repoName} at path "${path}"`);
+      
+      const normalizedPath = path.trim().replace(/^\/|\/$/g, '');
+      
+      if (normalizedPath === '.github/workflows') {
+        return [
+          { name: 'deploy.yml', path: '.github/workflows/deploy.yml', type: 'file' }
+        ];
+      }
+      
+      if (normalizedPath !== '') {
+        return [];
+      }
+
+      const mockContents: Record<string, any[]> = {
+        'proof-of-build': [
+          { name: 'package.json', path: 'package.json', type: 'file' },
+          { name: 'tsconfig.json', path: 'tsconfig.json', type: 'file' },
+          { name: 'Dockerfile', path: 'Dockerfile', type: 'file' },
+          { name: 'docker-compose.yml', path: 'docker-compose.yml', type: 'file' },
+          { name: '.github', path: '.github', type: 'dir' }
+        ],
+        'fastify-auth-node': [
+          { name: 'package.json', path: 'package.json', type: 'file' },
+          { name: 'tsconfig.json', path: 'tsconfig.json', type: 'file' },
+          { name: 'Dockerfile', path: 'Dockerfile', type: 'file' }
+        ],
+        'solidity-token-bridge': [
+          { name: 'package.json', path: 'package.json', type: 'file' },
+          { name: 'hardhat.config.ts', path: 'hardhat.config.ts', type: 'file' },
+          { name: 'main.tf', path: 'main.tf', type: 'file' }
+        ]
+      };
+
+      return mockContents[repoName.toLowerCase()] || [
+        { name: 'package.json', path: 'package.json', type: 'file' }
+      ];
+    }
+  }
+
+  async getFileContent(username: string, repoName: string, path: string): Promise<string> {
+    this.validateUsername(username);
+
+    const cacheKey = this.getCacheKey(`file:${repoName.toLowerCase()}:${path.replace(/\//g, '_')}`, username);
+    const cached = this.getCached(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const response = await this.fetchWithRetry(`https://api.github.com/repos/${username}/${repoName}/contents/${path}`);
+      const data = await response.json();
+      
+      if (data && data.content) {
+        const decoded = Buffer.from(data.content, 'base64').toString('utf-8');
+        this.setCache(cacheKey, decoded);
+        return decoded;
+      }
+      throw new Error('File content is empty or not in expected base64 format');
+    } catch (error) {
+      this.logger.error(`Failed to fetch file content for ${username}/${repoName} at path "${path}": ${error.message}`);
+      if (error instanceof NotFoundException || (error instanceof HttpException && error.getStatus() === 429) || error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // Offline Mock Fallback
+      this.logger.log(`Serving offline mock file content fallback for ${username}/${repoName} at path "${path}"`);
+      
+      const normalizedPath = path.trim().replace(/^\/|\/$/g, '');
+      const lowerRepo = repoName.toLowerCase();
+
+      if (normalizedPath === 'package.json') {
+        if (lowerRepo === 'proof-of-build') {
+          return JSON.stringify({
+            name: 'proof-of-build',
+            dependencies: {
+              'next': '^14.2.0',
+              'react': '^18.3.0',
+              '@nestjs/core': '^10.0.0',
+              'prisma': '^5.0.0',
+              '@google/generative-ai': '^0.13.0'
+            }
+          }, null, 2);
+        } else if (lowerRepo === 'fastify-auth-node') {
+          return JSON.stringify({
+            name: 'fastify-auth-node',
+            dependencies: {
+              'fastify': '^4.20.0',
+              'jsonwebtoken': '^9.0.0',
+              'redis': '^4.6.0'
+            }
+          }, null, 2);
+        } else if (lowerRepo === 'solidity-token-bridge') {
+          return JSON.stringify({
+            name: 'solidity-token-bridge',
+            dependencies: {
+              '@openzeppelin/contracts': '^4.9.0',
+              'ethers': '^5.7.0'
+            }
+          }, null, 2);
+        }
+      } else if (normalizedPath === 'Dockerfile') {
+        return 'FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm install\nCMD ["npm", "run", "dev"]';
+      } else if (normalizedPath === 'docker-compose.yml') {
+        return 'version: "3"\nservices:\n  web:\n    build: .\n    ports:\n      - "3000:3000"';
+      } else if (normalizedPath === 'main.tf') {
+        return 'provider "aws" {\n  region = "us-east-1"\n}\nresource "aws_s3_bucket" "b" {\n  bucket = "my-tf-test-bucket"\n}';
+      }
+
+      return '';
     }
   }
 }
