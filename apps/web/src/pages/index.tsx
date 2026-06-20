@@ -12,6 +12,7 @@ import {
   Activity,
   Code
 } from 'lucide-react';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export default function Dashboard() {
   const [owner, setOwner] = useState('sanyadev');
@@ -32,7 +33,7 @@ export default function Dashboard() {
 
   const fetchRepos = async () => {
     try {
-      const res = await fetch('http://localhost:3001/api/repositories');
+      const res = await fetch(`${API_BASE_URL}/api/repositories`);
       const json = await res.json();
       if (json.success && json.data.length > 0) {
         setRepositories(json.data);
@@ -78,7 +79,7 @@ export default function Dashboard() {
     e.preventDefault();
     setIsAnalyzing(true);
     try {
-      const res = await fetch('http://localhost:3001/api/repositories/analyze', {
+      const res = await fetch(`${API_BASE_URL}/api/repositories/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ owner, repositoryName: repoName })
@@ -130,7 +131,7 @@ export default function Dashboard() {
     if (!activeRepo) return;
     setIsVerifying(true);
     try {
-      const res = await fetch('http://localhost:3001/api/verification/verify', {
+      const res = await fetch(`${API_BASE_URL}/api/verification/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: deployUrl, repositoryId: activeRepo.id })
