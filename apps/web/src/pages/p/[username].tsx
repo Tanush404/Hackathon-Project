@@ -10,7 +10,8 @@ import {
   Layers, 
   Zap,
   Globe,
-  Cpu
+  Cpu,
+  ExternalLink
 } from 'lucide-react';
 
 export default function PublicPortfolio() {
