@@ -49,32 +49,43 @@ export default function PublicPortfolio() {
         const totalComplexity = repos.reduce((acc: number, curr: any) => acc + (curr.complexityScore || 0), 0);
         const globalScore = repos.length > 0 ? Math.round(totalComplexity / repos.length) : 85;
 
-        // 2. Aggregate languages into skill metrics
-        const languageCounts: Record<string, number> = {};
-        repos.forEach((r: any) => {
-          const lang = r.language || r.primaryLanguage;
-          if (lang) {
-            languageCounts[lang] = (languageCounts[lang] || 0) + 1;
+        // 2. Map skills
+        let skills: any[] = [];
+        if (data.skills && data.skills.length > 0) {
+          skills = data.skills.map((us: any) => ({
+            name: us.skill ? us.skill.name : us.name,
+            category: us.skill ? us.skill.category : us.category,
+            score: us.proficiencyScore || us.score || 0,
+            linesWritten: Number(us.linesWritten || 0),
+            projectsCount: us.projectsCount || 1
+          }));
+        } else {
+          const languageCounts: Record<string, number> = {};
+          repos.forEach((r: any) => {
+            const lang = r.language || r.primaryLanguage;
+            if (lang) {
+              languageCounts[lang] = (languageCounts[lang] || 0) + 1;
+            }
+          });
+
+          skills = Object.keys(languageCounts).map((lang) => {
+            const count = languageCounts[lang];
+            return {
+              name: lang,
+              category: 'language',
+              score: Math.min(100, 75 + count * 5),
+              linesWritten: count * 1450,
+              projectsCount: count
+            };
+          });
+
+          // If no skills found, display fallback default language skills
+          if (skills.length === 0) {
+            skills.push(
+              { name: 'TypeScript', category: 'language', score: 88, linesWritten: 4500, projectsCount: 1 },
+              { name: 'JavaScript', category: 'language', score: 80, linesWritten: 3200, projectsCount: 1 }
+            );
           }
-        });
-
-        const skills = Object.keys(languageCounts).map((lang) => {
-          const count = languageCounts[lang];
-          return {
-            name: lang,
-            category: 'language',
-            score: Math.min(100, 75 + count * 5),
-            linesWritten: count * 1450,
-            projectsCount: count
-          };
-        });
-
-        // If no skills found, display fallback default language skills
-        if (skills.length === 0) {
-          skills.push(
-            { name: 'TypeScript', category: 'language', score: 88, linesWritten: 4500, projectsCount: 1 },
-            { name: 'JavaScript', category: 'language', score: 80, linesWritten: 3200, projectsCount: 1 }
-          );
         }
 
         // 3. Dynamically assign achievements based on metrics

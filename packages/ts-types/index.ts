@@ -12,7 +12,7 @@ export interface UserProfile {
 
 export interface UserSkillDto {
   name: string;
-  category: 'language' | 'framework' | 'database' | 'devops';
+  category: 'language' | 'framework' | 'database' | 'devops' | 'Language' | 'Frontend' | 'Backend' | 'Database' | 'Cloud & DevOps' | string;
   proficiencyScore: number;
   linesWritten: number;
   projectsCount: number;

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GithubApiService } from './github-api.service';
 import { PrismaService } from '../database/prisma.service';
 import { RepositoriesService } from '../repositories/repositories.service';
+import { SkillExtractorService } from './skill-extractor.service';
 import * as crypto from 'crypto';
 
 @Injectable()
@@ -15,7 +16,8 @@ export class UsersService {
   constructor(
     private readonly githubApiService: GithubApiService,
     private readonly prisma: PrismaService,
-    private readonly repositoriesService: RepositoriesService
+    private readonly repositoriesService: RepositoriesService,
+    private readonly skillExtractorService: SkillExtractorService
   ) {}
 
   async analyzeUser(username: string) {
@@ -186,7 +188,7 @@ export class UsersService {
       return {
         ...user,
         repositories,
-        skills: [],
+        skills: user.skills || [],
         achievements: [],
       };
     }
@@ -238,6 +240,73 @@ export class UsersService {
         }
       }
       this.logger.log(`Completed background repository analysis for ${username}`);
+
+      // Extract user skills from repositories
+      try {
+        this.logger.log(`Triggering skill extraction for ${username}`);
+        const extractedSkills = await this.skillExtractorService.extractSkills(username, repos);
+        this.logger.log(`Extracted ${extractedSkills.length} skills for ${username}`);
+
+        // Persist to PostgreSQL database (wrapped in try-catch to support fallback mode gracefully)
+        try {
+          for (const extSkill of extractedSkills) {
+            // Upsert Skill reference record
+            const dbSkill = await this.prisma.skill.upsert({
+              where: { name: extSkill.name },
+              update: {
+                category: extSkill.category
+              },
+              create: {
+                name: extSkill.name,
+                category: extSkill.category
+              }
+            });
+
+            // Upsert UserSkill mapping record
+            await this.prisma.userSkill.upsert({
+              where: {
+                userId_skillId: {
+                  userId: userId,
+                  skillId: dbSkill.id
+                }
+              },
+              update: {
+                proficiencyScore: extSkill.confidence,
+                linesWritten: BigInt(extSkill.linesWritten),
+                projectsCount: extSkill.projectsCount
+              },
+              create: {
+                userId: userId,
+                skillId: dbSkill.id,
+                proficiencyScore: extSkill.confidence,
+                linesWritten: BigInt(extSkill.linesWritten),
+                projectsCount: extSkill.projectsCount
+              }
+            });
+          }
+          this.logger.log(`Successfully persisted extracted skills to DB for ${username}`);
+        } catch (dbErr) {
+          this.logger.warn(`Database not connected or query failed while saving skills: ${dbErr.message}`);
+        }
+
+        // Cache skills in-memory fallback
+        const lowerUser = username.toLowerCase();
+        const userFallback = this.mockUsers.get(lowerUser);
+        if (userFallback) {
+          userFallback.skills = extractedSkills.map(s => ({
+            proficiencyScore: s.confidence,
+            linesWritten: s.linesWritten,
+            projectsCount: s.projectsCount,
+            skill: {
+              name: s.name,
+              category: s.category
+            }
+          }));
+          this.mockUsers.set(lowerUser, userFallback);
+        }
+      } catch (extractorErr) {
+        this.logger.error(`Skill extraction failed for ${username}: ${extractorErr.message}`);
+      }
     });
   }
 }
