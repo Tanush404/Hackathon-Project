@@ -9,11 +9,16 @@ generator client {
 
 model User {
   id           String             @id @default(uuid())
+  githubId     String?            @unique
   username     String             @unique
-  email        String             @unique
+  email        String?            @unique
   displayName  String?
+  name         String?
   avatarUrl    String?
   bio          String?
+  followers    Int                @default(0)
+  following    Int                @default(0)
+  publicRepos  Int                @default(0)
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
   
@@ -43,15 +48,20 @@ model OAuthAccount {
 
 model Repository {
   id              String         @id @default(uuid())
+  repositoryId    String?        @unique
   userId          String
   user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  githubRepoId    BigInt         @unique
+  githubRepoId    BigInt?        @unique
   name            String
   fullName        String
   description     String?
   primaryLanguage String?
+  language        String?
   starsCount      Int            @default(0)
+  stars           Int            @default(0)
   forksCount      Int            @default(0)
+  forks           Int            @default(0)
+  topics          String[]       @default([])
   repoCreatedAt   DateTime?
   lastAnalyzedAt  DateTime?
   complexityScore Int            @default(0)

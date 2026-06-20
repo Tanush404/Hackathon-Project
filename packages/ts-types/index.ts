@@ -59,3 +59,39 @@ export interface VerifyDeploymentRequest {
   repositoryId: string;
   url: string;
 }
+
+export interface AnalyzeUserRequest {
+  username: string;
+}
+
+export interface AnalyzeUserResponse {
+  user: {
+    id: string;
+    githubId: string | null;
+    username: string;
+    displayName: string | null;
+    name: string | null;
+    avatarUrl: string | null;
+    bio: string | null;
+    followers: number;
+    following: number;
+    publicRepos: number;
+    createdAt: string;
+  };
+  repositories: Array<{
+    id: string;
+    repositoryId: string | null;
+    userId: string;
+    name: string;
+    fullName: string;
+    description: string | null;
+    language: string | null;
+    stars: number;
+    forks: number;
+    topics: string[];
+    complexityScore: number;
+    createdAt: string;
+  }>;
+  analysisStatus: string;
+  jobId?: string;
+}
