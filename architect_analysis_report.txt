@@ -1,0 +1,555 @@
+Proof of Build – System Architecture & Codebase Analysis Report
+
+This document provides a comprehensive analysis of the Proof of Build project. It has been prepared for the development team to understand the architecture, database schema, code quality, security posture, and developer roadmap.
+
+--------------------------------------------------------------------------------
+
+1. Project Overview
+
+Purpose
+Proof of Build is a decentralized developer portfolio auditing and validation platform. It is designed to verify developers' code repositories, repository complexity metrics, and live deployment uptimes. It generates cryptographically signed proof cards to compile validated developer profiles.
+
+Problem Solved
+1. Resume Inflation & Unverified Portfolios: Developers often list projects they did not build or exaggerate their code contribution. Proof of Build reads commit metrics, code volumes, and language ratios directly from git history to calculate an objective scoring metric.
+2. Dead Links & Unverified App Performance: Portfolios often contain links to offline apps or slow sites. The platform runs live queries to verify HTTP statuses, response speeds, SSL certificate validity, and browser console status.
+3. Lack of Authenticated Proof: Proof of Build signs evaluation logs cryptographically, preventing developers from falsifying or modifying audited results.
+
+Expected Users
+* Software Developers: To verify their build credentials, showcase complexity metrics, and share tamper-proof verification cards.
+* Recruiters & Engineering Managers: To review vetted applicant portfolios, look at AI-assisted summaries of code modularity and security, and download PDF reports.
+* Platform Auditors: To inspect historical validation hashes on the ledger.
+
+High-Level Application Workflow
+
+[ Developer Search ]
+        │ (1) Enters GitHub username
+        v
+[ Profile Discovery ] ───(2) Fetch profile and repos ───> [ PostgreSQL Database ]
+        │ (3) Returns profile info & triggers background scan
+        v
+[ Background Analysis Job ]
+        ├───(4a) Compute RCS Complexity Score
+        ├───(4b) Call Gemini AI for code audit
+        ├───(4c) Scan package.json/requirements for skills
+        └───(4d) Write scores & VDS metrics to DB
+        │
+        v (5) Live Audits (Optional)
+[ Live App Uptime & SSL Audits ] ───(6) HMAC-256 Sign ───> [ Proof Ledger ]
+        │
+        v (7) Export
+[ Stream PDF Recruiter Report ]
+
+--------------------------------------------------------------------------------
+
+2. Technology Stack
+
+The project is structured as a TypeScript Monorepo managed via npm Workspaces.
+
+| Component / Layer | Technology Chosen | Reason for Choice | Version |
+| :--- | :--- | :--- | :--- |
+| Monorepo Manager | npm Workspaces | Built-in workspace manager in Node, avoids configuring Lerna/Yarn. | v18+ Node compatible |
+| Backend API | NestJS | Robust modular structure, decorators, dependency injection container, TypeScript native. | ^10.0.0 |
+| Frontend UI | Next.js (Pages Router) & React | Clean routing, Server-Side Rendering support, component-driven architecture. | ^14.2.0 (Next), ^18.3.0 (React) |
+| ORM | Prisma | Typesafe schema definition, database generation, auto-generated TypeScript clients. | ^5.0.0 |
+| Database | PostgreSQL | Relational database to support complex foreign-key associations and transactions. | PG 15/16 target |
+| AI Auditor | Google Gemini AI | Dynamic code evaluation, text summary extraction, safety audits. | @google/generative-ai: ^0.13.0 |
+| Cryptography | Node.js crypto & JWT | Fast, secure generation of HMAC-SHA256 signatures and session tokens. | Native / jsonwebtoken: ^9.0.2 |
+| Styling | Vanilla CSS | Highly customizable, uses design tokens via custom variables. | CSS3 |
+| PDF Compiler | PDFKit | Node library to programmatically draw and compile layout files. | ^0.19.1 |
+| Charts / Icons | Recharts & Lucide React | Visual display of radar charts, bars, donuts, and dashboard vectors. | recharts: ^2.12.0 |
+
+--------------------------------------------------------------------------------
+
+3. Project Structure
+
+The codebase is organized into modular directories under apps/ and packages/:
+
+Project Tree View
+
+proof-of-build/
+├── apps/
+│   ├── api/                    # NestJS backend API gateway (running on port 3001)
+│   │   ├── src/
+│   │   │   ├── auth/           # OAuth exchange and session creation controllers
+│   │   │   ├── database/       # Wrapper around the shared Prisma Client
+│   │   │   ├── github/         # Placeholder directory (currently empty)
+│   │   │   ├── reports/        # PDF generation service using pdfkit
+│   │   │   ├── repositories/   # Code volume scanners and scoring formulas
+│   │   │   ├── users/          # GitHub profile syncing, skill extractor, scoring
+│   │   │   ├── verification/   # Live endpoint health and SSL cert auditing
+│   │   │   ├── app.module.ts   # Core NestJS application module
+│   │   │   └── main.ts         # Bootstrapping gateway and BigInt serialization patch
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   └── web/                    # Next.js frontend client (running on port 3000)
+│       ├── src/
+│       │   ├── pages/
+│       │   │   ├── p/
+│       │   │   │   └── [username].tsx  # Public shareable recruiter portfolio
+│       │   │   ├── _app.tsx            # Global CSS setup
+│       │   │   └── index.tsx           # Search dashboard and verification view
+│       │   └── styles/
+│       │       └── globals.css         # Main stylesheet (vars, glassmorphism, fonts)
+│       ├── package.json
+│       └── tsconfig.json
+├── packages/
+│   ├── database/               # Shared PostgreSQL definitions & database client
+│   │   ├── index.d.ts          # Shared TS Client exports
+│   │   ├── index.js            # Prisma Client initialization instance
+│   │   ├── package.json
+│   │   └── schema.prisma       # Database design
+│   └── ts-types/               # Shared interface definitions
+│       ├── index.ts            # Core DTO interfaces (RecruiterReport, VDS, etc.)
+│       └── package.json
+├── package.json                # Root package configurations & npm workspaces loader
+└── README.md                   # Setup manual
+
+--------------------------------------------------------------------------------
+
+4. Architecture Analysis
+
+Monorepo Architecture Overview
+The platform utilizes a Modular Monorepo Design to promote code sharing. Shared data interfaces (packages/ts-types) and the data persistence layer (packages/database) are defined once and linked into both backend and frontend applications during the bootstrap phase.
+
+               +--------------------------------------+
+               |          [ Next.js Frontend ]        |
+               +-------------------+------------------+
+                                   |
+                   Queries / HTTP  |  Pipes streamed PDF
+                   API requests    v
+               +--------------------------------------+
+               |          [ NestJS Backend ]          |
+               +---------+---------+---------+--------+
+                         |         |         |
+      Uses client        |         |         | Calls Gemini SDK
+      definitions        v         v         v
++------------------------+---+ +---+---------+--+ +------------------------+
+|  [ packages/database ]     | | [ GitHub API ] | | [ Google Gemini AI ]   |
+|  - PostgreSQL Persistence  | | - Fetch Profile| | - Code Modularity      |
+|  - Prisma Client Schema    | | - Commits Logs | | - Code Safety Audit    |
++----------------------------+ +----------------+ +------------------------+
+
+Detailed Layer Architectures
+
+1. Frontend Architecture:
+   * Next.js handles user queries and dashboard layouts. 
+   * Uses React state to fetch, cache, and update profile metrics.
+   * Leverages Recharts to render visual competency maps.
+   * Links dynamically to public profiles located at /p/[username].
+
+2. Backend Architecture:
+   * Uses NestJS modules to decouple code.
+   * Integrates a global middleware prefix api in main.ts.
+   * BigInt JSON serialization is globally patched in main.ts to allow serialization of DB models containing BigInts.
+
+3. Database Architecture:
+   * PostgreSQL database mapped through Prisma.
+   * PrismaService extends the main client class and hooks into NestJS's startup lifecycle to open/close connection pools.
+
+4. API Gateway Architecture:
+   * HTTP REST controllers expose JSON routes.
+   * Background scan jobs are processed asynchronously (non-blocking) within users.service.ts.
+
+5. Authentication Architecture:
+   * A simulated OAuth flow returns standard JWTs.
+   * Currently, authentication is fake, allowing any OAuth code to authorize the request.
+
+--------------------------------------------------------------------------------
+
+5. Database Analysis
+
+The PostgreSQL database layout is defined in schema.prisma.
+
+  +-------------------+              +-------------------------+
+  |       users       | <----------  |      oauth_accounts     |
+  +-------------------+              +-------------------------+
+  | id (PK)           |
+  | username (UQ)     | <----------  +-------------------------+
+  | ...               |              |      repositories       |
+  +-------------------+              +-------------------------+
+            |                        | id (PK)                 |
+            |                        | repositoryId (UQ)       |
+            |----------------------> | userId (FK)             |
+            |                        | stars, forks, languages |
+            |                        +-------------------------+
+            |                                  |
+            v                                  v
+  +-------------------+              +-------------------------+
+  | developer_metrics |              |      commits /          |
+  +-------------------+              |     contributions       |
+  | id (PK)           |              +-------------------------+
+  | userId (FK, UQ)   |              | repositoryId (FK)       |
+  | vds, grade, rank  |              | commitId (FK)           |
+  +-------------------+              +-------------------------+
+
+Table Schema Relationships & Constraints
+
+1. User (maps to "users")
+   * Central entity representing synced developers.
+   * Primary Key: id String @id @default(uuid()).
+   * Constraints: @unique on githubId, username (indexed, lowercase mapping), and email.
+   * Has relations with: OAuthAccount[], Repository[], Contribution[], UserSkill[], UserAchievement[], ProofLedger[], and DeveloperMetrics?.
+
+2. Repository (maps to "repositories")
+   * Stores repository configuration.
+   * Has foreign key: userId referencing User.id with onDelete: Cascade.
+   * Constraints: Unique constraint on repositoryId (GitHub ID) and githubRepoId (BigInt representation).
+   * Ratios: Stars, forks, language distribution, complexityScore.
+
+3. Commit & Contribution
+   * Commit: Stores author metadata and line volume. Unique index on sha hash.
+   * Contribution: Bridges User, Repository, and Commit. Uses a Decimal(5, 2) format for storing commit weight. Cascade deletions clean contributions when a repo is removed.
+
+4. UserSkill (maps to "user_skills")
+   * Join table for User and Skill with details on proficiencyScore (0-100), linesWritten (BigInt), and projectsCount.
+   * Composite Primary Key: @@id([userId, skillId]).
+
+5. DeveloperMetrics (maps to "developer_metrics")
+   * Caches profile scores.
+   * Foreign Key: userId (1-to-1 relationship with User).
+   * Attributes: vds (Verified Developer Score), grade, rank, and breakdowns of sub-scores.
+
+6. ProofLedger (maps to "proof_ledger")
+   * Append-only table that log events such as DEPLOYMENT_VERIFIED or REPOSITORY_VERIFIED.
+   * Stores stringified JSON payload and cryptographicProof signature.
+
+--------------------------------------------------------------------------------
+
+6. Backend Analysis
+
+The API routes are managed across multiple NestJS controllers:
+
+API Endpoint Registry
+
+| Method | Route | Controller File | Purpose |
+| :--- | :--- | :--- | :--- |
+| POST | /api/users/analyze | users.controller.ts | Checks profile metadata, starts background scans. |
+| GET | /api/users/:username | users.controller.ts | Returns User Profile DTO with repositories and skills. |
+| GET | /api/users/:username/metrics | users.controller.ts | Returns dashboard charts payload (VDS + repo metrics). |
+| GET | /api/users/:username/vds | users.controller.ts | Returns Verified Developer Score card. |
+| POST | /api/verification/verify | verification.controller.ts | Audits deployment uptime/SSL and cryptographically signs it. |
+| GET | /api/verification/repo/:repoId | verification.controller.ts | Returns historical audit reports for a repository. |
+| GET | /api/reports/:username | reports.controller.ts | Compiles JSON profile data for the PDF document parser. |
+| GET | /api/reports/:username/download | reports.controller.ts | Streams generated PDF verification report as download. |
+| POST | /api/repositories/analyze | repositories.controller.ts | Manually starts a repository analysis. |
+| GET | /api/repositories | repositories.controller.ts | Lists in-memory analyzed repositories. |
+| GET | /api/repositories/:id | repositories.controller.ts | Returns details of an analyzed repository. |
+| POST | /api/auth/github | auth.controller.ts | Performs simulated OAuth exchange. |
+
+Business Logic Flow
+
+Background Analysis Workflow
+
+[ UsersController: analyze ]
+             │
+             v
+[ UsersService: analyzeUser ]
+             │
+             ├──> Sync GitHub Profile & Public Repos via GithubApiService
+             ├──> Upsert User and Repository entities in DB
+             └──> Trigger triggerBackgroundAnalysis() (Non-blocking)
+                           │
+                           v (Promise.resolve().then)
+             [ Async Scanners Execution ]
+             ├──> RepositoriesService.analyzeRepository()
+             │     └──> Compute complexity
+             │     └──> Call Gemini AI for code safety/modularity audit
+             │     └──> Update repository.complexityScore in DB
+             │
+             ├──> SkillExtractorService.extractSkills()
+             │     └──> Read languages, package.json dependencies, dockerfiles
+             │     └──> Upsert Skill & UserSkill maps in DB
+             │
+             └──> ScoringService.calculateAndStoreMetrics()
+                   └──> Run VDS formulas and save DeveloperMetrics in DB
+
+--------------------------------------------------------------------------------
+
+7. Frontend Analysis
+
+The UI is built as a single-page reactive application using React hooks:
+
+Pages / Screens
+1. Search Dashboard (src/pages/index.tsx):
+   * Inputs GitHub username and calls /api/users/analyze to fetch developer details.
+   * Displays global metrics: Followers, Repos, Stars, and a Radar chart showing the developer's VDS competency breakdown.
+   * Shows a list of scanned repositories. Selecting a repo shows commit histories, code volume, and AI-powered quality metrics.
+   * Uptime verification box: Inputs URL and queries NestJS backend to verify deployment uptime and generate a cryptographic signature.
+   * Export link: Generates and downloads the PDF report.
+2. Public Shareable Portfolio (src/pages/p/[username].tsx):
+   * Public page showing read-only verified statistics.
+   * Includes VDS breakdowns, certified skills progress bars, and historical ledger verification receipts containing cryptographic signatures.
+
+Reusable UI Elements & State
+* The application lacks standalone component files. Instead, modules are defined inline in index.tsx and [username].tsx.
+* Component styling uses glassmorphism panels (.glass-card), dark background gradients, and Outfit/Jakarta typography imported in globals.css.
+* State Management: Simple local state (useState, useEffect). If the API connection fails, the frontend falls back to demo datasets (loadDemoFallback).
+
+--------------------------------------------------------------------------------
+
+8. Authentication & Security Review
+
+Current Flow
+Developers call POST /api/auth/github with an authorization code. The backend redirects this to AuthService.exchangeGithubCode(), which currently returns a static mock user (sanyadev) signed with a hardcoded JWT secret key.
+
+Key Security Vulnerabilities
+
+1. Hardcoded Cryptographic Keys:
+   * The JWT signing secret is hardcoded in auth.service.ts: 'proof-of-build-jwt-secret-key-12345'.
+   * The platform private signature key is hardcoded in verification.service.ts: 'proof-of-build-private-signature-key-holder'.
+   * Risk: Attackers can sign custom tokens and falsify proof ledger entries.
+
+2. No Route Authorization:
+   * None of the API endpoints require authentication.
+   * Risk: Anyone can trigger resource-heavy GitHub scans, analyze private projects, or populate the verification ledger database.
+
+3. Server-Side Request Forgery (SSRF):
+   * In verification.service.ts, queryEndpoint queries user-provided URLs.
+   * Risk: Attackers can make the backend request internal endpoints like local databases (http://localhost:5432) or cloud instance metadata services (http://169.254.169.254/).
+
+4. Input Validation Bypass:
+   * Lacks class-validator or express middleware pipes. Only basic username checks are done.
+   * Risk: Malicious payloads can bypass controller rules.
+
+--------------------------------------------------------------------------------
+
+9. Feature Breakdown
+
+1. GitHub Scan & RCS Analysis
+* Purpose: Calculates Repository Complexity Score based on volume, stars, language counts, and files.
+* Files involved: github-api.service.ts, users.service.ts, scoring.util.ts.
+* Formula:
+  RCS = min(100, log2(Lines) * 10 + Files * 0.2 + Languages * 5 + Stars * 0.5)
+* Database Interactions: Upserts User and Repository records.
+
+2. AI Code Quality Audit
+* Purpose: Performs safe auditing of repository properties and formats recommendations.
+* Files involved: repositories.service.ts.
+* Flow: Connects to gemini-1.5-flash model using a JSON-structured prompt to parse code strengths, security risks, and modularity scores.
+* Database Interactions: Saves the output JSON to Repository.aiAudit fields.
+
+3. Live Endpoint Auditing
+* Purpose: Audits deployment targets, verifies SSL chain parameters, and measures latency.
+* Files involved: verification.service.ts, verification.controller.ts.
+* Formula:
+  Deployment Score = (Uptime % * 0.40) + (Speed Score * 0.30) + (SSL Bonus * 0.15) + (JS DOM Health * 0.15)
+* Database Interactions: Inserts VerificationReport and ProofLedger records.
+
+--------------------------------------------------------------------------------
+
+10. Dependency Analysis
+
+Critical Dependencies
+
+Backend (apps/api/package.json)
+* @nestjs/core & @nestjs/common: Core framework.
+* @google/generative-ai: Interacts with Google Gemini AI models.
+* pdfkit: Generates recruiters' PDF profiles.
+* jsonwebtoken: Manages user sessions.
+* @proof-of-build/database: Links the shared Prisma PostgreSQL model.
+
+Frontend (apps/web/package.json)
+* next / react / react-dom: Frontend engine.
+* recharts: Draws dashboard analytics.
+* lucide-react: Supplies dashboard icon vectors.
+
+Unused & Misconfigured Dependencies
+* @nestjs/swagger: Listed in dependencies but never initialized in main.ts.
+* reflect-metadata: Standard, but can be pruned if already loaded by Nest packages.
+
+--------------------------------------------------------------------------------
+
+11. Code Quality Review
+
+Identified Code Smells & Issues
+1. Monolithic Page Controllers:
+   * index.tsx contains 987 lines of mixed layout styling, charts mapping, forms, state transitions, and hardcoded mock profiles. 
+   * Fix: Extract graphs and cards into a dedicated components/ workspace.
+2. Hardcoded Mock Fallbacks:
+   * When the API server is offline, the frontend falls back to mock profiles (loadDemoFallback). This can mask API connection errors during testing.
+3. Leaked Secrets Configuration:
+   * Hardcoding encryption keys within Git-managed TS modules.
+4. Poor Database Indexing:
+   * Relations like userId in Repository or userId in ProofLedger do not have explicit indexes defined in the Prisma schema. As data scales, queries will slow down.
+
+--------------------------------------------------------------------------------
+
+12. Bug & Risk Analysis
+
+Critical Bugs & Operational Flaws
+
+1. The "Sanya Dev" Hardcoded Scoring Bug:
+   * In repositories.service.ts, the contribution analysis checks:
+     mockCommits.forEach(c => {
+       if (c.authorName === 'Sanya Dev') { // Hardcoded author!
+         // calculates total score
+       }
+     });
+   * Impact: Any developer whose name is not "Sanya Dev" (e.g. @sanyamkawadiya01) will get 0 lines contributed, resulting in a 0% Complexity Score.
+2. Background Jobs Data Loss:
+   * Scans are launched inside unmanaged JS Promises (Promise.resolve().then(...) in users.service.ts).
+   * Impact: If the API gateway crashes or restarts mid-job, pending repository audits are lost.
+3. GitHub API Rate Limiting:
+   * Background scans query GitHub endpoints sequentially.
+   * Impact: Analyzing a user with many repositories can trigger rate limits on the backend, leading to API failures (HTTP 429).
+4. SSRF Vulnerability in Verification Service:
+   * Users can request internal loopback ranges (https://localhost:5432).
+
+--------------------------------------------------------------------------------
+
+13. Performance Analysis
+
+1. Sequential HTTP Request Bottlenecks:
+   * In scoring.service.ts, the codebase executes sequential fetches for repository stats, commits, pull requests, and issues.
+   * Fix: Run tasks in parallel using Promise.all().
+2. Synchronous PDF Streaming:
+   * PDFDocument compiles documents synchronously.
+   * Fix: Offload PDF generation to background worker processes to keep the main event loop responsive.
+3. Database Scan Performance:
+   * Lacks database indexes on foreign keys (userId, repositoryId).
+   * Fix: Add @@index([userId]) and @@index([repositoryId]) attributes in Prisma.
+
+--------------------------------------------------------------------------------
+
+14. Deployment Analysis
+
+The project runs as a monorepo workspace.
+
+Environment Variable Requirements
+
+Backend (apps/api/.env)
+* DATABASE_URL: Target PostgreSQL connection string.
+* GEMINI_API_KEY: API key for Gemini AI.
+* GITHUB_TOKEN / GITHUB_PAT: Optional GitHub personal access token to prevent API rate limits.
+* JWT_SECRET: Secret key for session JWTs.
+* PLATFORM_PRIVATE_KEY: Secret key for signing ledger reports.
+
+Frontend (apps/web/.env.local)
+* NEXT_PUBLIC_API_URL: Points to the NestJS backend gateway (e.g. http://localhost:3001).
+
+Note: There is currently no Docker or CI/CD configuration included in the workspace.
+
+--------------------------------------------------------------------------------
+
+15. Testing Analysis
+
+Current Test Coverage
+* 0% Test Coverage. The repository contains no Jest, Cypress, or Playwright tests, and no test scripts in the package configs.
+
+Recommended Testing Plan
+1. Unit Tests:
+   * Verify complexity calculations in scoring.util.ts.
+   * Verify skill categorization in skill-extractor.service.ts.
+2. Integration Tests:
+   * Verify PostgreSQL schema upserts using a test database.
+3. E2E Testing:
+   * Mock GitHub API responses to test profile scans and PDF generation.
+
+--------------------------------------------------------------------------------
+
+16. Contribution Guide
+
+Local Development Setup
+
+1. Clone the Repository:
+   git clone <repo-url>
+   cd proof-of-build
+2. Install Dependencies:
+   npm install
+3. Set Up Environments:
+   * Add GEMINI_API_KEY to apps/api/.env.
+   * Add DATABASE_URL to packages/database/.env.
+4. Generate Prisma Bindings:
+   npx prisma generate --schema=packages/database/schema.prisma
+5. Sync Schema with PostgreSQL:
+   npx prisma db push --schema=packages/database/schema.prisma
+6. Launch Development Servers:
+   npm run dev
+   * Frontend: http://localhost:3000
+   * Backend API: http://localhost:3001/api
+
+Git Workflow Rules
+* Branch Name Formats: feature/<feature-name> or bugfix/<issue-name>.
+* Database Schema Changes: Generate migrations using npx prisma migrate dev to keep schemas synchronized.
+
+--------------------------------------------------------------------------------
+
+17. Issue Identification Table
+
+| Priority | Issue | Files Affected | Impact | Suggested Fix |
+| :--- | :--- | :--- | :--- | :--- |
+| CRITICAL | Hardcoded developer name in scoring check | repositories.service.ts | Users other than "Sanya Dev" get a 0% Complexity score. | Compare against the dynamic owner argument instead of a hardcoded string. |
+| CRITICAL | Hardcoded secrets and JWT keys | auth.service.ts & verification.service.ts | Attackers can forge tokens and sign fake ledger logs. | Inject configurations via environmental variables. |
+| HIGH | SSRF vulnerability in live check | verification.service.ts | Allows attackers to map internal servers and resources. | Add domain allowlists and block internal IP ranges (e.g. 127.0.0.1, 10.0.0.0/8). |
+| HIGH | Sequential network request bottlenecks | scoring.service.ts | Slow profile loading speeds, risk of hitting API rate limits. | Run calls in parallel using Promise.all(). |
+| MEDIUM | Monolithic page controllers | index.tsx & [username].tsx | Poor code readability and difficult to maintain. | Refactor code by extracting elements into reusable components. |
+| MEDIUM | Unindexed Database Tables | schema.prisma | Slow join queries as the database scales. | Add @@index fields to database foreign keys. |
+| LOW | Unused swagger dependency | package.json | Unnecessary dependency load. | Clean up swagger packages or implement swagger UI config. |
+
+--------------------------------------------------------------------------------
+
+18. Beginner-Friendly Onboarding Guide
+
+Welcome to the team! Here is a guide to help you get started.
+
+How the App Works
+Imagine you want to buy a used car and need a verified inspection report. The seller says the car runs great, but you want an expert to check it.
+* Proof of Build does this for code.
+* The frontend (Next.js) is the user interface.
+* The backend (NestJS) acts as the inspector. It calls the GitHub API to check commit counts, reads configuration files to verify language skills, and uses Google Gemini AI to review the code.
+* The backend then signs this information using a private key and saves it to a PostgreSQL database so it cannot be altered.
+
+First Files to Study
+1. schema.prisma: Read this first to understand how data is structured.
+2. scoring.util.ts: Good example of logic helper rules.
+3. users.service.ts: Understand how backend tasks are coordinated.
+
+Safe to Modify
+* apps/web/src/styles/globals.css: Safe to modify styles and test layout themes.
+* apps/api/src/repositories/scoring.util.ts: Safe to modify scoring formulas and update criteria.
+
+Critical Files (Handle with Care)
+* packages/database/schema.prisma: Schema changes require database migrations.
+* apps/api/src/users/users.service.ts: Manages the core background analysis pipeline.
+
+--------------------------------------------------------------------------------
+
+19. Development Roadmap
+
+Phase 1: Easy (Beginner)
+1. Clean Up Unused Dependencies: Remove @nestjs/swagger from backend dependencies.
+2. Improve Error Boundaries: Add React fallback screens if API requests fail.
+3. Format Layout Styling: Tweak CSS variables in globals.css to refine visual design tokens.
+
+Phase 2: Intermediate (Developer)
+1. Fix the "Sanya Dev" Bug: Update repositories.service.ts to resolve complexity scores dynamically.
+2. Move Secrets to Environments: Use NestJS @nestjs/config to manage private keys.
+3. Extract Shared UI Components: Refactor dashboard elements into standalone React component files.
+
+Phase 3: Advanced (Senior)
+1. Add Job Queues: Integrate BullMQ (Redis-backed queue) to manage background scans.
+2. Optimize DB Indexes: Add foreign key indexes to database queries.
+3. Secure Live Audits: Implement SSRF validation blocklists to restrict query ranges.
+
+--------------------------------------------------------------------------------
+
+20. Final Summary
+
+Overall Project Health Score: 6.5 / 10
+The platform has a modern monorepo setup and a well-designed UI, but currently relies heavily on mocks and has some security gaps.
+
+* Security Score: 4 / 10 (Hardcoded credentials, unauthenticated routes, and SSRF vulnerabilities need addressing).
+* Maintainability Score: 6 / 10 (Clean backend module layout, but UI pages are monolithic).
+* Scalability Score: 5 / 10 (Background scans run unqueued, database lacks index definitions, and API calls are executed sequentially).
+
+Top 10 Things a New Developer Must Know
+1. TypeScript Monorepo: Built using npm workspaces. Run commands from the root directory.
+2. Prisma Schema Generation: Run npx prisma generate after schema edits.
+3. RCS Complexity Score: Formula based on volume, stars, file counts, and languages.
+4. Gemini AI Configuration: Backend requires GEMINI_API_KEY for AI audits. Runs in mock mode if key is missing.
+5. The "Sanya Dev" Bug: Repository complexity scores are currently hardcoded to "Sanya Dev". Fix this before onboarding.
+6. No Auth Enforcement: Backend route controls are currently open. Do not deploy to public environments without implementing security guards.
+7. Mock Database Fallbacks: Services will fallback to in-memory mocks if database connections fail.
+8. Live Auditing & Cryptography: Live audit signatures use HMAC-SHA256 with a private key.
+9. Synchronous PDF Generation: PDFs are compiled on-the-fly and streamed directly to the client.
+10. Zero Test Coverage: No test pipeline is currently set up. Add unit tests when writing new features.
